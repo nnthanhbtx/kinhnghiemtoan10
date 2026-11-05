@@ -41,7 +41,9 @@ function getOrCreateSheet() {
       'Thời gian làm bài',
       'Xếp loại',
       'Số giây',
-      'Mã bài làm'
+      'Mã bài làm',
+      'Số lần vi phạm',
+      'Chi tiết vi phạm'
     ];
     sheet.appendRow(headers);
 
@@ -96,7 +98,9 @@ function doPost(e) {
         item.durationFormatted || '',
         item.rank || '',
         Number(item.durationSeconds || 0),
-        item.id || ('id-' + new Date().getTime())
+        item.id || ('id-' + new Date().getTime()),
+        Number(item.violationCount || 0),
+        item.violationDetails || 'Không vi phạm'
       ]);
 
       return jsonResponse({
@@ -137,7 +141,9 @@ function doPost(e) {
             item.durationFormatted || '',
             item.rank || '',
             Number(item.durationSeconds || 0),
-            entryId || ('id-' + new Date().getTime())
+            entryId || ('id-' + new Date().getTime()),
+            Number(item.violationCount || 0),
+            item.violationDetails || 'Không vi phạm'
           ]);
           if (entryId) existingIds.add(entryId);
           addedCount++;

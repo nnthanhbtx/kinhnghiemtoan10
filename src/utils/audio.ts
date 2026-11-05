@@ -298,6 +298,41 @@ export function playSubmitFanfare(): void {
 }
 
 /**
+ * Âm thanh CẢNH BÁO VI PHẠM QUY CHẾ THI (Phát hiện mở tab khác / khoá màn hình / cửa sổ nổi AI)
+ */
+export function playViolationAlertSound(): void {
+  if (!isAudioEnabled()) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const pulses = [
+      { f: 880, t: 0.0, d: 0.14 },
+      { f: 622.25, t: 0.16, d: 0.14 },
+      { f: 880, t: 0.32, d: 0.14 },
+      { f: 622.25, t: 0.48, d: 0.22 },
+    ];
+
+    pulses.forEach(({ f, t, d }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      const startTime = now + t;
+      osc.frequency.setValueAtTime(f, startTime);
+      gain.gain.setValueAtTime(0.22, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + d);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(startTime);
+      osc.stop(startTime + d + 0.02);
+    });
+  } catch (e) {
+    console.error('Audio play error:', e);
+  }
+}
+
+/**
  * Text-to-speech for Vietnamese math questions
  */
 let currentUtterance: SpeechSynthesisUtterance | null = null;

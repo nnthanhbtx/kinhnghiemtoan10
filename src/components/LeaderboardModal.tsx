@@ -15,6 +15,8 @@ import {
   Filter,
   UserCheck,
   FileSpreadsheet,
+  ShieldAlert,
+  ShieldCheck,
 } from 'lucide-react';
 
 export const INITIAL_LEADERBOARD_ENTRIES: LeaderboardEntry[] = [];
@@ -562,6 +564,7 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
                     </th>
                     <th className="py-3.5 px-4 text-center">Tổng Điểm</th>
                     <th className="py-3.5 px-3 text-center">Thời Gian</th>
+                    <th className="py-3.5 px-3 text-center">Giám Sát Thi</th>
                     <th className="py-3.5 px-3 text-center hidden sm:table-cell">Xếp Loại</th>
                     <th className="py-3.5 px-3 text-center w-12">Xóa</th>
                   </tr>
@@ -569,13 +572,14 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
                 <tbody className="divide-y divide-sky-900/60 text-xs sm:text-sm">
                   {filteredEntries.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="py-10 text-center text-sky-400">
-                        Chưa có học sinh nào trong bảng xếp hạng. Kết quả sẽ tự động được ghi danh ngay sau khi học sinh hoàn thành và nộp bài thi.
+                      <td colSpan={10} className="py-10 text-center text-sky-400">
+                        Danh sách bảng xếp hạng hiện đang trống. Kết quả sẽ tự động được ghi danh ngay sau khi học sinh hoàn thành và nộp bài thi.
                       </td>
                     </tr>
                   ) : (
                     filteredEntries.map((entry, index) => {
                       const rankNum = index + 1;
+                      const vCount = entry.violationCount || 0;
                       return (
                         <tr
                           key={entry.id}
@@ -646,6 +650,23 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
 
                           <td className="py-3 px-3 text-center font-mono text-xs text-sky-300">
                             {formatDuration(entry.durationSeconds)}
+                          </td>
+
+                          <td className="py-3 px-3 text-center">
+                            {vCount > 0 ? (
+                              <span
+                                className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                                title={entry.violationDetails || `Vi phạm ${vCount} lần`}
+                              >
+                                <ShieldAlert className="w-3 h-3 text-rose-400" />
+                                <span>Vi phạm ({vCount})</span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                                <span>0 lỗi</span>
+                              </span>
+                            )}
                           </td>
 
                           <td className="py-3 px-3 text-center hidden sm:table-cell">

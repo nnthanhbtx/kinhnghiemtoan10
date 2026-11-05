@@ -1,7 +1,18 @@
 import React, { useEffect } from 'react';
-import { PartScoreDetail } from '../types/exam';
+import { PartScoreDetail, ExamViolation } from '../types/exam';
 import confetti from 'canvas-confetti';
-import { Award, Printer, RotateCcw, ArrowDownCircle, Star, Trophy, User, Clock } from 'lucide-react';
+import {
+  Award,
+  Printer,
+  RotateCcw,
+  ArrowDownCircle,
+  Star,
+  Trophy,
+  User,
+  Clock,
+  ShieldAlert,
+  ShieldCheck,
+} from 'lucide-react';
 import { formatDuration } from './LeaderboardModal';
 
 interface ResultReportProps {
@@ -12,6 +23,7 @@ interface ResultReportProps {
   durationSeconds?: number;
   rankPosition?: number;
   totalRanked?: number;
+  violations?: ExamViolation[];
   onResetExam: () => void;
   onScrollToQuestions: () => void;
   onOpenLeaderboard?: () => void;
@@ -25,6 +37,7 @@ export const ResultReport: React.FC<ResultReportProps> = ({
   durationSeconds,
   rankPosition,
   totalRanked,
+  violations = [],
   onResetExam,
   onScrollToQuestions,
   onOpenLeaderboard,
@@ -181,6 +194,18 @@ export const ResultReport: React.FC<ResultReportProps> = ({
               </div>
             )}
 
+            {violations.length > 0 ? (
+              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-950/90 border border-rose-500/60 text-xs text-rose-200 font-bold">
+                <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                <span>Vi phạm quy chế: {violations.length} lần</span>
+              </div>
+            ) : (
+              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-950/70 border border-emerald-500/40 text-xs text-emerald-300 font-bold">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Giám sát: Nghiêm túc (0 vi phạm)</span>
+              </div>
+            )}
+
             {rankPosition && (
               <button
                 type="button"
@@ -212,6 +237,36 @@ export const ResultReport: React.FC<ResultReportProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Chi tiết Nhật ký Báo Vi Phạm Quy Chế Thi (nếu có) */}
+      {violations.length > 0 && (
+        <div className="p-4 sm:p-5 rounded-2xl bg-rose-950/40 border border-rose-500/50 space-y-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 text-rose-300 font-extrabold text-sm">
+              <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0" />
+              <span>Báo Cáo Giám Sát Vi Phạm Quy Chế Thi ({violations.length} lần)</span>
+            </div>
+            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-500/20 text-rose-200 border border-rose-400/40">
+              Đã ghi nhận vào Bảng Xếp Hạng & Google Sheet
+            </span>
+          </div>
+          <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+            {violations.map((v, idx) => (
+              <div
+                key={v.id}
+                className="flex items-start justify-between gap-3 p-2.5 rounded-xl bg-[#071126]/90 border border-rose-500/30 text-xs"
+              >
+                <div className="text-rose-100">
+                  <span className="font-bold text-rose-400 mr-1.5">Lần {idx + 1}:</span>
+                  <span className="font-semibold text-white">{v.label}</span>
+                  <span className="text-rose-200/80 ml-1.5">— {v.detail}</span>
+                </div>
+                <span className="font-mono text-[11px] text-rose-300 shrink-0">{v.timestamp}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 4 Phần Chi Tiết Điểm Số */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

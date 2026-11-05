@@ -5,7 +5,14 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { examSets } from './data/examSets';
-import { ExamSet, StudentAnswers, ExamPart, PartScoreDetail, LeaderboardEntry } from './types/exam';
+import {
+   ExamSet,
+  StudentAnswers,
+  ExamPart,
+  PartScoreDetail,
+  LeaderboardEntry,
+  ExamViolation,
+} from './types/exam';
 import { calculateScore } from './utils/scoring';
 import { Header } from './components/Header';
 import { Timer } from './components/Timer';
@@ -34,7 +41,13 @@ import {
   sendEntryToGoogleSheet,
 } from './utils/googleSheetWebhook';
 import { usePWAInstall } from './hooks/usePWAInstall';
-import { playSubmitFanfare, playCorrectSound, playWrongSound, stopSpeech } from './utils/audio';
+import {
+  playSubmitFanfare,
+  playCorrectSound,
+  playWrongSound,
+  playViolationAlertSound,
+  stopSpeech,
+} from './utils/audio';
 import {
   Send,
   AlertTriangle,
@@ -54,12 +67,15 @@ import {
   WifiOff,
   Smartphone,
   Clock,
+  ShieldAlert,
+  ShieldCheck,
+  EyeOff,
 } from 'lucide-react';
 
-const LEADERBOARD_STORAGE_KEY = 'math10_leaderboard_v2_clean';
+const LEADERBOARD_STORAGE_KEY = 'math10_leaderboard_v3_empty';
 const STUDENT_INFO_STORAGE_KEY = 'math10_student_info_v1';
 const CUSTOM_EXAMS_STORAGE_KEY = 'math10_custom_exams_v1';
-const ACTIVE_PROGRESS_STORAGE_KEY = 'math10_active_progress_v1';
+const ACTIVE_PROGRESS_STORAGE_KEY = 'math10_active_progress_v2';
 
 const EMPTY_EXAM: ExamSet = {
   id: 'empty-exam',
@@ -228,6 +244,10 @@ export default function App() {
 
   const [leaderboardEntries, setLeaderboardEntries] = useState<LeaderboardEntry[]>(() => {
     try {
+      // Xoá toàn bộ dữ liệu bảng xếp hạng cũ theo yêu cầu để danh sách trống hoàn toàn
+      localStorage.removeItem('math10_leaderboard_v1');
+      localStorage.removeItem('math10_leaderboard_v2_clean');
+      localStorage.removeItem('math10_active_progress_v1');
       const saved = localStorage.getItem(LEADERBOARD_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
@@ -240,6 +260,30 @@ export default function App() {
     }
     return INITIAL_LEADERBOARD_ENTRIES;
   });
+
+  // Quản lý danh sách vi phạm quy chế thi (mở tab khác, khóa màn hình, che góc màn hình dùng AI...)
+  const [violations, setViolations] = useState<ExamViolation[]>(() => {
+    try {
+      const savedProgress = localStorage.getItem(ACTIVE_PROGRESS_STORAGE_KEY);
+      if (savedProgress) {
+        const parsed = JSON.parse(savedProgress);
+        if (
+          parsed &&
+          parsed.selectedExamId === currentExam.id &&
+          Array.isArray(parsed.violations)
+        ) {
+          return parsed.violations;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+  const [activeViolationAlert, setActiveViolationAlert] = useState<ExamViolation | null>(null);
+  const [isViolationModalOpen, setIsViolationModalOpen] = useState<boolean>(false);
+  const lastViolationTimestampRef = useRef<number>(0);
+  const baselineViewportRef = useRef<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
     try {
@@ -328,13 +372,157 @@ export default function App() {
             answers,
             interactedPart4: Array.from(interactedPart4),
             bookmarked: Array.from(bookmarkedQuestions),
+            violations,
           })
         );
       }
     } catch {
       // ignore
     }
-  }, [currentExam.id, isExamStarted, isSubmitted, answers, interactedPart4, bookmarkedQuestions]);
+  }, [
+    currentExam.id,
+    isExamStarted,
+    isSubmitted,
+    answers,
+    interactedPart4,
+    bookmarkedQuestions,
+    violations,
+  ]);
+
+  // Hệ thống giám sát chống gian lận & phát hiện sử dụng AI khi đang làm bài
+  useEffect(() => {
+    if (!isExamStarted || isSubmitted) {
+      baselineViewportRef.current = null;
+      return;
+    }
+
+    baselineViewportRef.current = {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    };
+
+    const recordViolation = (
+      type: ExamViolation['type'],
+      label: string,
+      detail: string
+    ) => {
+      const now = Date.now();
+      // Tránh ghi nhận trùng lặp cùng 1 sự kiện trong vòng 1.8 giây
+      if (now - lastViolationTimestampRef.current < 1800) {
+        return;
+      }
+      lastViolationTimestampRef.current = now;
+
+      const timeStr = new Date(now).toLocaleTimeString('vi-VN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      });
+
+      const newViolation: ExamViolation = {
+        id: `viol-${now}`,
+        type,
+        label,
+        detail,
+        timestamp: timeStr,
+      };
+
+      setViolations((prev) => [...prev, newViolation]);
+      setActiveViolationAlert(newViolation);
+      playViolationAlertSound();
+    };
+
+    // 1. Phát hiện chuyển tab khác, ẩn trình duyệt hoặc khóa màn hình điện thoại
+    const handleVisibilityChange = () => {
+      if (document.hidden || document.visibilityState === 'hidden') {
+        recordViolation(
+          'tab_switch',
+          'Mở tab khác / Khóa màn hình',
+          'Học sinh đã rời khỏi màn hình bài thi (mở tab khác, chuyển sang ứng dụng AI hoặc khóa màn hình điện thoại).'
+        );
+      }
+    };
+
+    // 2. Phát hiện màn hình bị che 1 góc nhỏ bởi cửa sổ nổi AI (Floating window / Pop-up / Split-screen overlay) làm mất tiêu điểm
+    const handleWindowBlur = () => {
+      setTimeout(() => {
+        if (document.hidden || document.visibilityState === 'hidden') {
+          return; // Đã xử lý bởi visibilitychange
+        }
+        if (!document.hasFocus()) {
+          recordViolation(
+            'screen_covered',
+            'Màn hình bị che / Mở cửa sổ nổi AI',
+            'Phát hiện màn hình bài thi bị che một phần hoặc mất quyền điều khiển do mở cửa sổ nổi / công cụ AI giải bài đè lên màn hình.'
+          );
+        }
+      }, 150);
+    };
+
+    // 3. Phát hiện chia đôi màn hình (Split-screen) hoặc thu nhỏ góc trình duyệt để tra cứu AI
+    const handleViewportResize = () => {
+      const activeTag = document.activeElement?.tagName;
+      // Bỏ qua khi bàn phím ảo điện thoại bật lên lúc đang gõ ô trả lời ngắn (INPUT / TEXTAREA)
+      if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') {
+        return;
+      }
+
+      const base = baselineViewportRef.current;
+      if (!base) return;
+
+      const curW = window.innerWidth;
+      const curH = window.innerHeight;
+
+      // Nếu chiều rộng hoặc chiều cao bị thu hẹp bất thường (> 18%) so với lúc bắt đầu làm bài
+      const widthShrunk = base.width - curW > Math.max(90, base.width * 0.18);
+      const heightShrunk = base.height - curH > Math.max(140, base.height * 0.22);
+
+      if (widthShrunk || heightShrunk) {
+        recordViolation(
+          'split_screen',
+          'Chia đôi màn hình / Che góc màn hình dùng AI',
+          'Phát hiện kích thước vùng hiển thị bài thi bị thu hẹp bất thường (chia đôi màn hình hoặc mở song song ứng dụng AI giải bài).'
+        );
+      }
+    };
+
+    // 4. Phát hiện sao chép đề thi hoặc chụp màn hình gửi cho AI
+    const handleCopyAttempt = () => {
+      recordViolation(
+        'copy_attempt',
+        'Sao chép nội dung đề thi',
+        'Phát hiện thao tác sao chép văn bản câu hỏi trong lúc đang làm bài thi.'
+      );
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === 'PrintScreen' ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'S' || e.key === 's'))
+      ) {
+        recordViolation(
+          'copy_attempt',
+          'Chụp ảnh vùng màn hình gửi AI',
+          'Phát hiện phím tắt chụp vùng màn hình để cắt ảnh câu hỏi trong lúc đang làm bài.'
+        );
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('resize', handleViewportResize);
+    document.addEventListener('copy', handleCopyAttempt);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('resize', handleViewportResize);
+      document.removeEventListener('copy', handleCopyAttempt);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isExamStarted, isSubmitted]);
 
   const resultReportRef = useRef<HTMLDivElement | null>(null);
   const questionsContainerRef = useRef<HTMLDivElement | null>(null);
@@ -357,6 +545,9 @@ export default function App() {
     setScoreDetail(null);
     setBookmarkedQuestions(new Set());
     setInteractedPart4(new Set());
+    setViolations([]);
+    setActiveViolationAlert(null);
+    setIsViolationModalOpen(false);
     setActiveFilterPart('all');
     examStartTimeRef.current = null;
     setTimerElapsedSeconds(0);
@@ -452,6 +643,10 @@ export default function App() {
 
     const finalName = studentName.trim() || 'Học sinh Lớp 10';
     const finalClass = studentClass.trim() || '10A1';
+    const violationSummary =
+      violations.length > 0
+        ? violations.map((v, i) => `Lần ${i + 1} (${v.timestamp}): ${v.label}`).join('; ')
+        : 'Không vi phạm';
 
     const newEntry: LeaderboardEntry = {
       id: `entry-${Date.now()}`,
@@ -468,6 +663,8 @@ export default function App() {
       rank: result.rank,
       submittedAt: new Date().toISOString(),
       isCurrentUser: true,
+      violationCount: violations.length,
+      violationDetails: violationSummary,
     };
 
     setLeaderboardEntries((prev) => [
@@ -638,6 +835,7 @@ export default function App() {
               durationSeconds={submittedDurationSeconds}
               rankPosition={currentUserRankPosition}
               totalRanked={leaderboardEntries.length}
+              violations={violations}
               onResetExam={handleResetExam}
               onScrollToQuestions={() => {
                 questionsContainerRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -707,7 +905,7 @@ export default function App() {
                 )}
               </div>
 
-              {/* Đồng hồ làm bài & Tuỳ chỉnh cỡ chữ */}
+              {/* Đồng hồ làm bài (CHỈ xuất hiện khi học sinh đã nhấn Bắt Đầu Làm Bài), Nút Báo Vi Phạm & Tuỳ chỉnh cỡ chữ */}
               <div className="flex items-center justify-between sm:justify-end gap-2 flex-wrap">
                 {allExams.length === 0 && (
                   <button
@@ -720,7 +918,8 @@ export default function App() {
                   </button>
                 )}
 
-                {examMode === 'exam' && !isSubmitted && (
+                {/* Mục Thời Gian: Ẩn hoàn toàn trước khi thi, chỉ hiển thị khi học sinh chọn Bắt Đầu Làm Bài */}
+                {examMode === 'exam' && isExamStarted && !isSubmitted && (
                   <Timer
                     initialMinutes={currentExam.durationMinutes}
                     isRunning={isExamStarted && !isSubmitted}
@@ -729,6 +928,30 @@ export default function App() {
                     onElapsedChange={setTimerElapsedSeconds}
                   />
                 )}
+
+                {/* Mục Báo Vi Phạm: Giám sát mở tab khác, khóa màn hình hoặc che góc màn hình dùng AI */}
+                <button
+                  type="button"
+                  onClick={() => setIsViolationModalOpen(true)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition-all shadow-md ${
+                    violations.length > 0
+                      ? 'bg-rose-950/90 border-rose-500 text-rose-200 animate-pulse'
+                      : isExamStarted && !isSubmitted
+                      ? 'bg-[#0b1739] border-emerald-500/40 text-emerald-300 hover:bg-sky-950'
+                      : 'bg-[#071126] border-sky-900/70 text-sky-300 hover:text-white'
+                  }`}
+                  title="Mục báo vi phạm khi học sinh mở tab khác, khóa màn hình hoặc che góc màn hình dùng AI giải bài"
+                >
+                  {violations.length > 0 ? (
+                    <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
+                  ) : (
+                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                  )}
+                  <span>
+                    Báo Vi Phạm:{' '}
+                    <strong className="font-mono">{violations.length}</strong>
+                  </span>
+                </button>
 
                 <div className="flex items-center bg-[#071126] border border-sky-900/70 rounded-xl p-1 text-xs ml-auto sm:ml-0">
                   {(
@@ -1161,6 +1384,16 @@ export default function App() {
                   {bookmarkedQuestions.size} câu
                 </span>
               </div>
+              <div className="flex justify-between pt-1 border-t border-sky-900/80">
+                <span>Số lần vi phạm quy chế thi:</span>
+                <span
+                  className={`font-bold font-mono ${
+                    violations.length > 0 ? 'text-rose-400' : 'text-emerald-400'
+                  }`}
+                >
+                  {violations.length} lần
+                </span>
+              </div>
             </div>
 
             {/* Thông tin học sinh ghi danh Bảng xếp hạng */}
@@ -1209,6 +1442,198 @@ export default function App() {
                 className="px-4 py-2 rounded-xl text-xs font-bold text-[#071126] bg-cyan-400 hover:bg-cyan-300 shadow-md transition-colors"
               >
                 Đồng ý nộp bài
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Cảnh Báo Nóng Khi Phát Hiện Học Sinh Vi Phạm (mở tab khác / khóa màn hình / che góc màn hình dùng AI) */}
+      {activeViolationAlert && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fadeIn">
+          <div className="bg-[#071126] rounded-2xl max-w-md w-full p-6 shadow-2xl border-2 border-rose-500 space-y-4 text-white">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-rose-500/20 border border-rose-400 flex items-center justify-center shrink-0 animate-pulse">
+                  <ShieldAlert className="w-7 h-7 text-rose-400" />
+                </div>
+                <div>
+                  <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-rose-500 text-white mb-1">
+                    Cảnh Báo Vi Phạm Lần #{violations.length}
+                  </span>
+                  <h3 className="text-base sm:text-lg font-extrabold text-rose-300">
+                    Phát Hiện Vi Phạm Quy Chế Làm Bài!
+                  </h3>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-rose-950/60 border border-rose-500/50 space-y-2 text-xs sm:text-sm">
+              <div className="font-bold text-white flex items-center justify-between">
+                <span>Lỗi vi phạm: {activeViolationAlert.label}</span>
+                <span className="font-mono text-xs text-rose-300">
+                  {activeViolationAlert.timestamp}
+                </span>
+              </div>
+              <p className="text-rose-100/90 leading-relaxed">{activeViolationAlert.detail}</p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-[#0b1739] border border-sky-800/80 text-xs text-sky-200 space-y-1">
+              <div className="font-bold text-amber-300">Lưu ý quy chế phòng thi:</div>
+              <p className="leading-relaxed">
+                Hệ thống nghiêm cấm mở tab khác, khóa màn hình hoặc mở cửa sổ nổi / chia đôi màn hình che một góc để sử dụng AI giải bài. Mọi lượt vi phạm (<strong>{violations.length} lần</strong>) đã được tự động ghi vào Phiếu Kết Quả và Bảng Xếp Hạng của giáo viên.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveViolationAlert(null);
+                  setIsViolationModalOpen(true);
+                }}
+                className="px-3.5 py-2.5 rounded-xl bg-[#0b1739] hover:bg-sky-900 text-sky-300 text-xs font-bold border border-sky-800"
+              >
+                Xem nhật ký ({violations.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveViolationAlert(null)}
+                className="px-5 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-400 text-white text-xs font-black shadow-lg transition-colors"
+              >
+                Đã hiểu & Quay lại làm bài
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Mục Báo Vi Phạm & Giám Sát Chống Gian Lận AI */}
+      {isViolationModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-[#071126] rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-sky-800 space-y-4 text-white max-h-[90vh] flex flex-col">
+            <div className="flex items-start justify-between gap-3 border-b border-sky-900 pb-3">
+              <div className="flex items-center gap-3">
+                <div
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
+                    violations.length > 0
+                      ? 'bg-rose-500/20 border-rose-400 text-rose-400'
+                      : 'bg-emerald-500/20 border-emerald-400 text-emerald-400'
+                  }`}
+                >
+                  {violations.length > 0 ? (
+                    <ShieldAlert className="w-5 h-5" />
+                  ) : (
+                    <ShieldCheck className="w-5 h-5" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-white">
+                    Mục Báo Vi Phạm & Giám Sát Phòng Thi
+                  </h3>
+                  <p className="text-xs text-sky-300">
+                    Tự động phát hiện chuyển tab, khóa màn hình hoặc che góc màn hình dùng AI
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsViolationModalOpen(false)}
+                className="p-1.5 rounded-xl bg-[#0b1739] text-sky-300 hover:text-white border border-sky-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              {/* Trạng thái hiện tại */}
+              <div
+                className={`p-3.5 rounded-xl border flex items-center justify-between ${
+                  violations.length > 0
+                    ? 'bg-rose-950/50 border-rose-500/50 text-rose-200'
+                    : 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
+                }`}
+              >
+                <div className="text-xs">
+                  <div className="font-bold">
+                    Trạng thái giám sát:{' '}
+                    {!isExamStarted
+                      ? 'Chờ học sinh bắt đầu làm bài'
+                      : isSubmitted
+                      ? 'Đã kết thúc bài thi'
+                      : 'Đang giám sát thời gian thực'}
+                  </div>
+                  <div className="text-[11px] opacity-85 mt-0.5">
+                    Thí sinh: {studentName.trim() || 'Chưa nhập tên'} · Lớp:{' '}
+                    {studentClass.trim() || 'Chưa nhập lớp'}
+                  </div>
+                </div>
+                <span className="px-3 py-1 rounded-xl font-mono text-xs font-black bg-[#071126] border border-current">
+                  {violations.length} vi phạm
+                </span>
+              </div>
+
+              {/* Các hành vi bị hệ thống phát hiện */}
+              <div className="p-3.5 rounded-xl bg-[#0b1739] border border-sky-900 space-y-2 text-xs">
+                <div className="font-bold text-cyan-300 flex items-center gap-1.5">
+                  <EyeOff className="w-4 h-4" />
+                  <span>Các hành vi gian lận bị hệ thống tự động báo vi phạm:</span>
+                </div>
+                <ul className="space-y-1.5 text-slate-200 list-disc pl-4 leading-relaxed">
+                  <li>
+                    <strong>Mở tab khác / Chuyển ứng dụng:</strong> Rời khỏi tab đề thi để mở trình duyệt hoặc ứng dụng giải toán AI.
+                  </li>
+                  <li>
+                    <strong>Màn hình bị khoá / Tắt màn hình:</strong> Khóa màn hình điện thoại hoặc ẩn ứng dụng trong lúc đang tính giờ làm bài.
+                  </li>
+                  <li>
+                    <strong>Che 1 góc nhỏ màn hình / Chia đôi màn hình dùng AI:</strong> Mở cửa sổ nổi (Floating Window, Pop-up AI, ống kính chụp giải bài) đè lên một góc màn hình hoặc chia đôi màn hình điện thoại.
+                  </li>
+                  <li>
+                    <strong>Sao chép đề / Chụp màn hình:</strong> Copy nội dung câu hỏi hoặc dùng phím tắt chụp vùng màn hình để gửi cho AI.
+                  </li>
+                </ul>
+              </div>
+
+              {/* Danh sách chi tiết các lần vi phạm */}
+              <div className="space-y-2">
+                <div className="text-xs font-bold text-sky-300 uppercase tracking-wider">
+                  Nhật ký vi phạm đã ghi nhận ({violations.length})
+                </div>
+                {violations.length === 0 ? (
+                  <div className="p-5 rounded-xl bg-[#0b1739]/60 border border-sky-900/70 text-center text-xs text-emerald-300 font-semibold">
+                    Chưa phát hiện hành vi vi phạm nào. Học sinh đang làm bài nghiêm túc!
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {violations.map((v, idx) => (
+                      <div
+                        key={v.id}
+                        className="p-3 rounded-xl bg-rose-950/40 border border-rose-500/40 text-xs space-y-1"
+                      >
+                        <div className="flex items-center justify-between font-bold text-rose-300">
+                          <span>
+                            Vi phạm lần #{idx + 1}: {v.label}
+                          </span>
+                          <span className="font-mono text-[11px] text-rose-200">
+                            {v.timestamp}
+                          </span>
+                        </div>
+                        <p className="text-slate-200 leading-relaxed">{v.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-sky-900">
+              <button
+                type="button"
+                onClick={() => setIsViolationModalOpen(false)}
+                className="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-[#040817] font-bold text-xs transition-colors"
+              >
+                Đóng
               </button>
             </div>
           </div>

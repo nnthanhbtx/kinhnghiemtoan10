@@ -103,6 +103,14 @@ export interface StudentAnswers {
   part4: Record<string, string[]>; // questionId -> array of step ids in current arranged order
 }
 
+export interface ExamViolation {
+  id: string;
+  timestamp: string;
+  type: 'tab_switch' | 'screen_covered' | 'split_screen' | 'copy_attempt';
+  label: string;
+  detail: string;
+}
+
 export interface PartScoreDetail {
   part1Score: number;
   part1Max: number;
@@ -138,6 +146,8 @@ export interface PartScoreDetail {
     application: number; // Vận dụng (%)
     logicalReasoning: number; // Suy luận logic & tự luận (%)
   };
+  violationCount?: number;
+  violations?: ExamViolation[];
 }
 
 export interface LeaderboardEntry {
@@ -155,5 +165,8 @@ export interface LeaderboardEntry {
   rank: 'Xuất sắc' | 'Giỏi' | 'Khá' | 'Trung bình' | 'Cần cố gắng';
   submittedAt: string;
   isCurrentUser?: boolean;
+  violationCount?: number;
+  violationDetails?: string;
 }
+
 
